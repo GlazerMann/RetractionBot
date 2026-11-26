@@ -1,5 +1,6 @@
 """Exercise the job entry point with no wiki or database credentials."""
 
+from datetime import date
 import socket
 from types import SimpleNamespace
 
@@ -34,7 +35,7 @@ class Page:
 def run_bot(monkeypatch):
     record = Retraction(
         b"Crossref", b"10.1234/paper", b"10.1234/notice", b"1234", b"",
-        b"Retraction", b"",
+        b"Retraction", b"", date(2026, 1, 1),
     )
     settings = {
         "template_name_map": {"en": {"retraction": "Retracted"}},
@@ -73,5 +74,24 @@ def test_retracted_citation_is_tagged_once(run_bot):
 
 def test_unrelated_paper_does_not_trigger_a_save(run_bot):
     page = Page("<ref>{{Cite journal|doi=10.1234/other}}</ref>")
+    run_bot(page)
+    assert not page.saved
+
+
+@pytest.mark.parametrize("identifier, expected", [
+    ((b"10.1234/a", b""), '"10.1234/a"'),
+    ((b"10.1234/a", b"0"), '"10.1234/a"'),
+    ((b"unavailable", b"1234"), '"1234"'),
+    ((b"", b""), ""),
+    ((b"10.1234/A(1):b", b"1234"), '"10.1234/a(1):b" OR "1234"'),
+])
+def test_search_query_uses_valid_identifiers(identifier, expected):
+    assert bot.search_query(identifier) == expected
+
+
+def test_killswitch_checked_again_before_save(run_bot, monkeypatch):
+    values = iter([True, False])
+    monkeypatch.setattr(bot, "check_bot_killswitches", lambda site: next(values))
+    page = Page("<ref>{{Cite journal|doi=10.1234/paper}}</ref>")
     run_bot(page)
     assert not page.saved
