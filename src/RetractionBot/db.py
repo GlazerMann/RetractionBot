@@ -21,7 +21,7 @@ COLUMN_LIMITS = {
 }
 
 # Order of the values in the rows given to Database.replace_retractions().
-RETRACTION_COLUMNS = ("timestamp",) + tuple(COLUMN_LIMITS)
+RETRACTION_COLUMNS = ("timestamp",) + tuple(COLUMN_LIMITS) + ("notice_date",)
 
 # The TIMESTAMP type only holds 1970-01-01 00:00:01 UTC to 2038-01-19. Dates
 # outside 1971-2037 are stored as this value instead (a day in, so that no
@@ -29,6 +29,7 @@ RETRACTION_COLUMNS = ("timestamp",) + tuple(COLUMN_LIMITS)
 PLACEHOLDER_TIMESTAMP = datetime.datetime(1970, 1, 2)
 
 INSERT_BATCH_SIZE = 1000
+MIN_SNAPSHOT_PERCENT = 90
 
 
 def fold_doi(doi):
@@ -55,7 +56,7 @@ def check_lengths(rows):
                 "row %d has %d values, expected %d"
                 % (number, len(row), len(RETRACTION_COLUMNS))
             )
-        for column, value in zip(RETRACTION_COLUMNS[1:], row[1:]):
+        for column, value in zip(COLUMN_LIMITS, row[1:-1]):
             size = len(str(value).encode("utf-8"))
             if size > COLUMN_LIMITS[column]:
                 raise ValueError(
@@ -74,6 +75,7 @@ class Retraction:
         retraction_pmid,
         retraction_nature,
         url,
+        notice_date=None,
     ):
         self.origin = origin.decode("utf-8")
         self.original_doi = original_doi.decode("utf-8")
@@ -82,10 +84,14 @@ class Retraction:
         self.retraction_pubmed = retraction_pmid.decode("utf-8")
         self.retraction_nature = retraction_nature.decode("utf-8")
         self.url = url.decode("utf-8")
+        self.notice_date = notice_date
 
 
 class Database:
     def __init__(self, db_settings: dict[str, str]):
+        self.allow_large_snapshot_shrink = (
+            db_settings.get("allow_large_snapshot_shrink", False) is True
+        )
         self._db = pymysql.connect(
             host=db_settings["host"],
             db=db_settings["name"],
@@ -110,6 +116,14 @@ class Database:
                         "Retraction Watch snapshot contained no usable rows"
                     )
                 check_lengths(rows)
+                cur.execute("SELECT COUNT(*) FROM retractions")
+                previous_count = cur.fetchone()[0]
+                if (not self.allow_large_snapshot_shrink
+                        and len(rows) * 100 < previous_count * MIN_SNAPSHOT_PERCENT):
+                    raise RuntimeError(
+                        f"Snapshot shrank from {previous_count} to {len(rows)} rows; "
+                        "keeping the existing table. Verify the source before overriding."
+                    )
 
                 cur.execute("DROP TABLE IF EXISTS retractions_new, retractions_old")
                 cur.execute("CREATE TABLE retractions_new LIKE retractions")
@@ -193,7 +207,7 @@ class Database:
             cur.execute(
                 f"""
                 SELECT origin, original_doi, retraction_doi, original_pmid,
-                       retraction_pmid, retraction_nature, url
+                       retraction_pmid, retraction_nature, url, notice_date
                 FROM retractions WHERE {column}=%s
                 """,
                 (identifier,),

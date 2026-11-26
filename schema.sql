@@ -7,6 +7,7 @@ CREATE TABLE `retractions` (
   `retraction_pmid` varbinary(200) NOT NULL,
   `retraction_nature` varbinary(200) NOT NULL,
   `url` varbinary(5000) NOT NULL,
+  `notice_date` DATE NULL,
   KEY `original_doi` (`original_doi`),
   KEY `original_pmid` (`original_pmid`)
 ) ENGINE=Aria;
@@ -31,3 +32,8 @@ CREATE TABLE `edit_log` (
 -- find_retractions.py reloads the data into `retractions_new` (created with
 -- CREATE TABLE ... LIKE, so it inherits these keys) and swaps it in with an
 -- atomic RENAME TABLE. It also uses `retractions_old` briefly.
+
+-- Before deploying the notice-date importer against an existing database:
+--   ALTER TABLE retractions ADD COLUMN notice_date DATE NULL;
+-- Stop the bot and refresh jobs while migrating; run a full successful refresh
+-- before resuming the bot. Existing rows have unknown notice dates.

@@ -20,6 +20,7 @@ class FakeCursor:
     def __init__(self, connection):
         self.connection = connection
         self.lock_query = False
+        self.count_query = False
 
     def __enter__(self):
         return self
@@ -29,6 +30,7 @@ class FakeCursor:
 
     def execute(self, sql, params=None):
         self.lock_query = sql.startswith("SELECT GET_LOCK")
+        self.count_query = sql == "SELECT COUNT(*) FROM retractions"
         self.connection.log.append(("execute", squash(sql), params))
         if self.connection.fail_on and self.connection.fail_on in sql:
             raise RuntimeError("simulated failure")
@@ -43,6 +45,8 @@ class FakeCursor:
         return self.connection.result
 
     def fetchone(self):
+        if self.count_query:
+            return (self.connection.live_count,)
         if self.lock_query:
             return (self.connection.lock_result,)
         return self.connection.result[0] if self.connection.result else None
@@ -56,6 +60,7 @@ class FakeConnection:
         self.open = True
         self.lock_result = 1
         self.lost_rows = 0
+        self.live_count = 0
 
     def cursor(self):
         return FakeCursor(self)
@@ -93,6 +98,7 @@ def make_row(**overrides):
         "retraction_pmid": "0",
         "retraction_nature": "Retraction",
         "url": "",
+        "notice_date": datetime.date(2021, 1, 2),
     }
     values.update(overrides)
     return tuple(values[column] for column in db.RETRACTION_COLUMNS)
@@ -113,7 +119,7 @@ def test_empty_identifiers_are_not_looked_up(database, connection, identifier):
 
 def test_lookup_folds_the_doi_and_names_its_columns(database, connection):
     connection.result = [
-        (b"Crossref", b"10.1234/abc", b"10.1234/r", b"0", b"0", b"Retraction", b"")
+        (b"Crossref", b"10.1234/abc", b"10.1234/r", b"0", b"0", b"Retraction", b"", datetime.date(2021, 1, 2))
     ]
 
     records = database.retrieve_retracted_identifier(" 10.1234/ABC ")
@@ -127,6 +133,7 @@ def test_lookup_folds_the_doi_and_names_its_columns(database, connection):
     assert records[0].original_doi == "10.1234/abc"
     assert records[0].retraction_nature == "Retraction"
     assert records[0].original_pubmed == "0"
+    assert records[0].notice_date == datetime.date(2021, 1, 2)
 
 
 def test_pmid_uses_its_own_indexed_column(database, connection):
@@ -187,15 +194,16 @@ def test_reload_builds_a_new_table_and_swaps_it_in(database, connection):
 
     statements = connection.statements()
     assert statements[0].startswith("SELECT GET_LOCK")
-    assert statements[1:3] == [
+    assert statements[1] == "SELECT COUNT(*) FROM retractions"
+    assert statements[2:4] == [
         "DROP TABLE IF EXISTS retractions_new, retractions_old",
         "CREATE TABLE retractions_new LIKE retractions",
     ]
-    assert "STRICT_ALL_TABLES" in statements[3]
-    assert statements[4].startswith(
+    assert "STRICT_ALL_TABLES" in statements[4]
+    assert statements[5].startswith(
         "INSERT INTO retractions_new (timestamp, origin, original_doi,"
     )
-    assert statements[5:7] == [
+    assert statements[6:8] == [
         "RENAME TABLE retractions TO retractions_old, retractions_new TO retractions",
         "DROP TABLE retractions_old",
     ]
@@ -247,7 +255,7 @@ def test_failed_swap_leaves_the_live_table_alone(database, connection):
     "row, error",
     [
         (make_row(original_doi="x" * 201), "original_doi"),
-        (make_row()[:-1], "expected 8"),
+        (make_row()[:-1], "expected 9"),
     ],
 )
 def test_bad_rows_are_rejected_before_staging(database, connection, row, error):
@@ -304,3 +312,16 @@ def test_lengths_are_counted_in_bytes():
 )
 def test_clamp_timestamp(timestamp, expected):
     assert db.clamp_timestamp(timestamp) == expected
+
+
+def test_large_snapshot_shrink_fails_before_staging(database, connection):
+    connection.live_count = 10000
+    with pytest.raises(RuntimeError, match="Snapshot shrank"):
+        database.replace_retractions([make_row()] * 2000)
+    assert not any("DROP TABLE" in sql for sql in connection.statements())
+
+
+def test_explicit_shrink_override(database, connection):
+    connection.live_count = 10000
+    database.allow_large_snapshot_shrink = True
+    assert database.replace_retractions([make_row()]) == 1

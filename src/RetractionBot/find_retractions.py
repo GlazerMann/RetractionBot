@@ -13,7 +13,7 @@ from .db import (
     clamp_timestamp,
     fold_doi,
 )
-from .identifiers import is_doi, is_pmid
+from .identifiers import is_doi, is_pmid, normalize_notice_url
 from .settings import configure_logging, load_bot_settings
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ RETRACTION_WATCH_URL = "https://gitlab.com/crossref/retraction-watch-data/-/raw/
 REQUIRED_COLUMNS = (
     "Record ID",
     "OriginalPaperDate",
+    "RetractionDate",
     "OriginalPaperDOI",
     "OriginalPaperPubMedID",
     "RetractionDOI",
@@ -63,6 +64,16 @@ def parse_timestamp(value):
     return PLACEHOLDER_TIMESTAMP
 
 
+def parse_notice_date(value):
+    """RetractionDate is the notice date, not the original publication date."""
+    for date_format in ("%m/%d/%Y %H:%M", "%m/%d/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(value.strip(), date_format).date()
+        except ValueError:
+            continue
+    return None
+
+
 def row_from_record(record):
     """
     Turns a CSV record into a row for Database.replace_retractions(), in the
@@ -76,11 +87,11 @@ def row_from_record(record):
 
     if not nature or not (is_doi(original_doi) or is_pmid(original_pmid)):
         return None
-    # A notice can have no DOI or PMID. Keep the status for a known paper,
-    # while omitting unverified links from rows without a notice identifier.
+    # Retain valid source URLs even if the notice has no DOI or PMID.
     notice_doi = retraction_doi if is_doi(retraction_doi) else ""
     notice_pmid = retraction_pmid if is_pmid(retraction_pmid) else ""
-    urls = record["URLS"] if notice_doi or notice_pmid else ""
+    urls = ";".join(filter(None, (normalize_notice_url(url)
+                                  for url in record["URLS"].split(";"))))
 
     return (
         parse_timestamp(record["OriginalPaperDate"]),
@@ -91,6 +102,7 @@ def row_from_record(record):
         notice_pmid,
         nature,
         fit_urls(urls, COLUMN_LIMITS["url"]),
+        parse_notice_date(record["RetractionDate"]),
     )
 
 
@@ -108,6 +120,8 @@ def parse_retractions(text):
     missing = [
         name for name in REQUIRED_COLUMNS if name not in (reader.fieldnames or [])
     ]
+    if reader.fieldnames and len(reader.fieldnames) != len(set(reader.fieldnames)):
+        raise ValueError("Duplicate Retraction Watch CSV column")
     if missing:
         raise ValueError(
             "Retraction Watch data has no column(s): %s" % ", ".join(missing)

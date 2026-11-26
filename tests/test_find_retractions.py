@@ -17,6 +17,7 @@ COLUMNS = find_retractions.REQUIRED_COLUMNS + ("Title",)
 DEFAULTS = {
     "Record ID": "1",
     "OriginalPaperDate": "1/2/2020 0:00",
+    "RetractionDate": "3/4/2021 0:00",
     "OriginalPaperDOI": "10.1234/abc",
     "OriginalPaperPubMedID": "0",
     "RetractionDOI": "10.1234/abc.r",
@@ -82,6 +83,7 @@ def test_row_layout_matches_the_table():
         "",
         "Retraction",
         "https://example.org/a",
+        datetime.date(2021, 3, 4),
     )
 
 
@@ -144,7 +146,7 @@ def test_missing_notice_identifiers_keep_the_paper_status(nature):
         "RetractionNature": nature, "RetractionDOI": "unavailable",
         "RetractionPubMedID": "0",
     }))
-    assert row[2:] == ("10.1234/abc", "", "", "", nature, "")
+    assert row[2:] == ("10.1234/abc", "", "", "", nature, "https://example.org/a", datetime.date(2021, 3, 4))
 
 
 @pytest.mark.parametrize(
@@ -344,3 +346,23 @@ def test_main_returns_zero_after_a_reload(monkeypatch):
 
     assert find_retractions.main() == 0
     assert len(reloaded) == 1
+
+
+def test_notice_dates_are_not_deduplicated():
+    rows = find_retractions.parse_retractions(make_csv(
+        {"RetractionDate": "2021-01-01"}, {"RetractionDate": "2022-01-01"},
+    ))
+    assert [row[-1] for row in rows] == [datetime.date(2021, 1, 1), datetime.date(2022, 1, 1)]
+
+
+def test_invalid_notice_date_is_unknown():
+    (row,) = find_retractions.parse_retractions(make_csv({"RetractionDate": "unknown"}))
+    assert row[-1] is None
+
+
+def test_notice_urls_are_safe_and_retraction_watch_upgraded():
+    (row,) = find_retractions.parse_retractions(make_csv({
+        "RetractionDOI": "unavailable", "RetractionPubMedID": "0",
+        "URLS": "http://retractionwatch.com/a;http://example.org/b;https://bad.test/|x;ftp://example.org/a",
+    }))
+    assert row[7] == "https://retractionwatch.com/a;http://example.org/b"
