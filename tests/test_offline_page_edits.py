@@ -1,6 +1,5 @@
 """Exercise the job entry point with no wiki or database credentials."""
 
-from datetime import date
 import socket
 from types import SimpleNamespace
 
@@ -32,27 +31,22 @@ class Page:
 
 
 @pytest.fixture
-def run_bot(monkeypatch, tmp_path):
+def run_bot(monkeypatch):
     record = Retraction(
         b"Crossref", b"10.1234/paper", b"10.1234/notice", b"1234", b"",
         b"Retraction", b"",
     )
-    record.notice_date = date(2026, 1, 1)
     settings = {
         "template_name_map": {"en": {"retraction": "Retracted"}},
         "template_field_names": {"en": {"doi": "doi", "pmid": "pmid"}},
         "summary_map": {"en": "Test retraction notice"},
         "citation_templates": {"en": ["Cite journal"]},
         "db": {},
-        "scan": {"state_file": str(tmp_path / "offline.sqlite3")},
     }
     wiki = SimpleNamespace(login=lambda: None)
     switch = SimpleNamespace(text="yes", get=lambda **kwargs: "yes", title=lambda: "run")
     database = SimpleNamespace(
         load_retracted_identifiers=lambda: [(b"10.1234/paper", b"1234")],
-        load_scan_rows=lambda: [
-            (b"10.1234/paper", b"1234", b"10.1234/notice", b"", b"Retraction", b"", record.notice_date)
-        ],
         retrieve_retracted_identifier=lambda identifier: [record] if identifier == "10.1234/paper" else [],
         log_retraction_edit=lambda *args, **kwargs: None,
     )
